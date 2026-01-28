@@ -3,6 +3,7 @@
 require 'date'
 require 'json'
 require 'net/http'
+require 'securerandom'
 require 'uri'
 
 # ============================================================
@@ -28,48 +29,90 @@ INTERVIEW_KEYWORDS = ['interview', 'candidate', 'hiring', 'recruiting']
 # ============================================================
 
 class FirefliesAPI
+  MAX_RETRIES = 1
+  RETRY_DELAY = 2
+
   def self.list_recent(limit: 10, format: :detailed)
-    File.write('/tmp/fireflies_cmd.txt', "FirefliesAPI.list_recent(limit: #{limit})")
-    system("#{EXECUTE_PATH} --code 'FirefliesAPI.list_recent(limit: #{limit})' > /tmp/fireflies_output.json 2>&1")
-    JSON.parse(File.read('/tmp/fireflies_output.json'), symbolize_names: true)
-  rescue => e
-    { success: false, error: e.message }
+    with_retry do
+      system("#{EXECUTE_PATH} --code 'FirefliesAPI.list_recent(limit: #{limit})' > /tmp/fireflies_output.json 2>&1")
+      JSON.parse(File.read('/tmp/fireflies_output.json'), symbolize_names: true)
+    end
   end
 
   def self.get_transcript(transcript_id:, format: :detailed)
-    system("#{EXECUTE_PATH} --code 'FirefliesAPI.get_transcript(transcript_id: \"#{transcript_id}\")' > /tmp/transcript_output.json 2>&1")
-    JSON.parse(File.read('/tmp/transcript_output.json'), symbolize_names: true)
-  rescue => e
-    { success: false, error: e.message }
+    with_retry do
+      system("#{EXECUTE_PATH} --code 'FirefliesAPI.get_transcript(transcript_id: \"#{transcript_id}\")' > /tmp/transcript_output.json 2>&1")
+      JSON.parse(File.read('/tmp/transcript_output.json'), symbolize_names: true)
+    end
+  end
+
+  private
+
+  def self.with_retry
+    retries = 0
+    begin
+      yield
+    rescue => e
+      if retries < MAX_RETRIES
+        retries += 1
+        sleep(RETRY_DELAY)
+        retry
+      end
+      { success: false, error: e.message }
+    end
   end
 end
 
 class LLMAnalyzer
+  MAX_RETRIES = 1
+  RETRY_DELAY = 2
+
   def self.analyze(prompt:, max_tokens: 1500)
-    # Write prompt to temp file to avoid escaping issues
-    prompt_file = "/tmp/llm_prompt_#{$$}_#{rand(10000)}.txt"
-    File.write(prompt_file, prompt)
+    retries = 0
+    begin
+      prompt_file = "/tmp/llm_prompt_#{$$}_#{SecureRandom.hex(6)}.txt"
+      File.write(prompt_file, prompt)
 
-    cmd = "#{EXECUTE_PATH} --code 'GeminiAPI.generate(max_tokens: #{max_tokens})' --body-file '#{prompt_file}' 2>&1"
-    output = `#{cmd}`
+      cmd = "#{EXECUTE_PATH} --code 'GeminiAPI.generate(max_tokens: #{max_tokens})' --body-file '#{prompt_file}' 2>&1"
+      output = `#{cmd}`
 
-    File.delete(prompt_file) rescue nil
+      File.delete(prompt_file) rescue nil
 
-    result = JSON.parse(output, symbolize_names: true)
+      result = JSON.parse(output, symbolize_names: true)
 
-    if result[:success]
-      result[:content] || result.to_s
-    else
-      puts "LLM error: #{result[:error]}"
-      "Unable to analyze: #{result[:error]}"
+      if result[:success]
+        result[:content] || result.to_s
+      else
+        raise "LLM error : #{result[:error]}"
+      end
+    rescue => e
+      if retries < MAX_RETRIES
+        retries += 1
+        sleep(RETRY_DELAY)
+        retry
+      end
+      puts "LLM error : #{e.message}"
+      "Unable to analyze : #{e.message}"
     end
-  rescue JSON::ParserError => e
-    puts "LLM JSON parse error: #{e.message}"
-    "Unable to parse response"
-  rescue => e
-    puts "LLM error: #{e.message}"
-    "Unable to analyze: #{e.message}"
   end
+end
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def calculate_weighted_score(grades, rubric)
+  total_weight = 0
+  weighted_sum = 0
+  grades.each do |criterion, details|
+    criterion_str = criterion.to_s
+    weight = rubric.dig(criterion_str, :weight) || rubric.dig(criterion_str.gsub('_', ' '), :weight) || 10
+    if details[:score]
+      weighted_sum += details[:score] * weight
+      total_weight += weight
+    end
+  end
+  total_weight > 0 ? (weighted_sum.to_f / total_weight).round(1) : 0
 end
 
 # ============================================================
@@ -85,19 +128,19 @@ RUBRICS = {
     'Participation balance' => { question: 'Did all attendees contribute meaningfully (balanced talk-time)?', weight: 15 }
   },
   pitch: {
-    'Problem understanding' => { question: 'Did we deeply understand the problem being solved & customer pain?', weight: 15 },
-    'Solution clarity' => { question: 'Was the solution clearly explained with differentiation from alternatives?', weight: 15 },
-    'Market opportunity' => { question: 'Was TAM/SAM/SOM articulated with credible sizing methodology?', weight: 10 },
-    'Team assessment' => { question: 'Did we evaluate founder-market fit, relevant experience & team dynamics?', weight: 15 },
-    'Traction evidence' => { question: 'Were concrete metrics shared (ARR, growth rate, retention)?', weight: 10 },
-    'Listening quality' => { question: 'Did the interviewer allow adequate founder speaking time (~70%) with minimal interruptions & relevant follow-ups?', weight: 10 },
-    'Question depth' => { question: 'Did questions go 2-3 levels deep on critical topics with strategic "why" follow-ups?', weight: 10 },
-    'Reflection quality' => { question: 'Did the interviewer paraphrase or reflect back founder\'s key points before responding? (Target: 2+ instances)', weight: 5 },
-    'Immediate value delivery' => { question: 'Did the interviewer offer specific intros, insights, or resources during the call? (Target: 1+ concrete offer)', weight: 5 },
-    'Relevance mapping' => { question: 'Did the interviewer explicitly connect portfolio/expertise to founder\'s current challenges?', weight: 5 },
-    'Insight capture' => { question: 'Were key non-obvious insights documented & next steps clearly defined with specific actions?', weight: 5 },
+    'Problem understanding' => { question: 'Did we deeply understand the problem being solved & customer pain?', weight: 13 },
+    'Solution clarity' => { question: 'Was the solution clearly explained with differentiation from alternatives?', weight: 13 },
+    'Market opportunity' => { question: 'Was TAM/SAM/SOM articulated with credible sizing methodology?', weight: 9 },
+    'Team assessment' => { question: 'Did we evaluate founder-market fit, relevant experience & team dynamics?', weight: 13 },
+    'Traction evidence' => { question: 'Were concrete metrics shared (ARR, growth rate, retention)?', weight: 9 },
+    'Listening quality' => { question: 'Did the interviewer allow adequate founder speaking time (~70%) with minimal interruptions & relevant follow-ups?', weight: 9 },
+    'Question depth' => { question: 'Did questions go 2-3 levels deep on critical topics with strategic "why" follow-ups?', weight: 9 },
+    'Reflection quality' => { question: 'Did the interviewer paraphrase or reflect back founder\'s key points before responding? (Target : 2+ instances)', weight: 4 },
+    'Immediate value delivery' => { question: 'Did the interviewer offer specific intros, insights, or resources during the call? (Target : 1+ concrete offer)', weight: 4 },
+    'Relevance mapping' => { question: 'Did the interviewer explicitly connect portfolio/expertise to founder\'s current challenges?', weight: 4 },
+    'Insight capture' => { question: 'Were key non-obvious insights documented & next steps clearly defined with specific actions?', weight: 4 },
     'Red flag detection' => { question: 'Were potential risks assessed (founder coachability, team alignment, market depth)?', weight: 5 },
-    'Next steps clarity' => { question: 'Were follow-up actions & timeline clearly established?', weight: 5 }
+    'Next steps clarity' => { question: 'Were follow-up actions & timeline clearly established?', weight: 4 }
   },
   one_on_one: {
     'Career development' => { question: 'Was meaningful career growth or skill development discussed?', weight: 25 },
@@ -156,30 +199,50 @@ end
 # GRADING
 # ============================================================
 
+def extract_json(text)
+  # Find matching braces to extract the outermost JSON object
+  start_idx = text.index('{')
+  return nil unless start_idx
+
+  depth = 0
+  (start_idx...text.length).each do |i|
+    case text[i]
+    when '{'
+      depth += 1
+    when '}'
+      depth -= 1
+      if depth == 0
+        return text[start_idx..i]
+      end
+    end
+  end
+  nil
+end
+
 def grade_meeting(meeting, transcript, cluster)
   rubric = RUBRICS[cluster]
 
   rubric_str = rubric.map do |criterion, details|
-    "- #{criterion} (#{details[:weight]}% weight): #{details[:question]}"
+    "- #{criterion} (#{details[:weight]}% weight) : #{details[:question]}"
   end.join("\n")
 
   prompt = <<~PROMPT
     Analyze this meeting transcript & grade it using the following weighted rubric.
-    For each criterion, provide:
+    For each criterion, provide :
     1. Score (1-10)
     2. Brief evidence (quote from transcript if applicable)
     3. One-sentence justification
 
-    Meeting: #{meeting[:title]}
-    Meeting Type: #{cluster}
+    Meeting : #{meeting[:title]}
+    Meeting Type : #{cluster}
 
-    Rubric (with weights):
+    Rubric (with weights) :
     #{rubric_str}
 
-    Transcript:
+    Transcript :
     #{transcript[:text]}
 
-    Format your response as JSON:
+    Format your response as JSON :
     {
       "criterion_name": {
         "score": 7,
@@ -188,16 +251,16 @@ def grade_meeting(meeting, transcript, cluster)
       }
     }
 
-    IMPORTANT: Use the exact criterion names from the rubric as keys.
+    IMPORTANT : Use the exact criterion names from the rubric as keys.
   PROMPT
 
   result = LLMAnalyzer.analyze(prompt: prompt)
 
   begin
-    json_match = result.match(/\{[\s\S]*\}/)
-    json_match ? JSON.parse(json_match[0], symbolize_names: true) : {}
+    json_str = extract_json(result)
+    json_str ? JSON.parse(json_str, symbolize_names: true) : {}
   rescue JSON::ParserError
-    puts "Warning: Could not parse grading JSON for #{meeting[:title]}"
+    puts "Warning : Could not parse grading JSON for #{meeting[:title]}"
     {}
   end
 end
@@ -214,17 +277,7 @@ def generate_improvements(meeting, grades, cluster)
     return ["Meeting performed well across all criteria. Continue current approach."]
   end
 
-  total_weight = 0
-  weighted_sum = 0
-  grades.each do |criterion, details|
-    criterion_str = criterion.to_s
-    weight = rubric.dig(criterion_str, :weight) || rubric.dig(criterion_str.gsub('_', ' '), :weight) || 10
-    if details[:score]
-      weighted_sum += details[:score] * weight
-      total_weight += weight
-    end
-  end
-  weighted_avg = total_weight > 0 ? (weighted_sum.to_f / total_weight).round(1) : 0
+  weighted_avg = calculate_weighted_score(grades, rubric)
 
   prioritized_low = low_scores.sort_by do |k, v|
     criterion_str = k.to_s
@@ -235,11 +288,11 @@ def generate_improvements(meeting, grades, cluster)
   prompt = <<~PROMPT
     This #{cluster} meeting had a weighted average score of #{weighted_avg}/10.
 
-    Low-scoring criteria (prioritized by importance):
+    Low-scoring criteria (prioritized by importance) :
     #{prioritized_low.map { |k, v|
       criterion_str = k.to_s
       weight = rubric.dig(criterion_str, :weight) || rubric.dig(criterion_str.gsub('_', ' '), :weight) || 10
-      "- #{k} (#{weight}% weight): #{v[:score]}/10 - #{v[:justification]}"
+      "- #{k} (#{weight}% weight) : #{v[:score]}/10 - #{v[:justification]}"
     }.join("\n")}
 
     Provide 3-5 specific, actionable recommendations to improve future #{cluster} meetings.
@@ -258,15 +311,15 @@ end
 # ============================================================
 
 def generate_report(meetings_by_cluster, date)
-  report = ["# Daily Meeting Review: #{date}", "", "## Executive Summary"]
+  report = ["# Daily Meeting Review : #{date}", "", "## Executive Summary"]
 
   total = meetings_by_cluster.values.flatten.count
-  report << "- Total meetings: #{total}"
-  report << "- Internal: #{meetings_by_cluster[:internal]&.count || 0}"
-  report << "- 1:1s: #{meetings_by_cluster[:one_on_one]&.count || 0}"
-  report << "- Pitch: #{meetings_by_cluster[:pitch]&.count || 0}"
-  report << "- Interview: #{meetings_by_cluster[:interview]&.count || 0}"
-  report << "- Other: #{meetings_by_cluster[:other]&.count || 0}"
+  report << "- Total meetings : #{total}"
+  report << "- Internal : #{meetings_by_cluster[:internal]&.count || 0}"
+  report << "- 1:1s : #{meetings_by_cluster[:one_on_one]&.count || 0}"
+  report << "- Pitch : #{meetings_by_cluster[:pitch]&.count || 0}"
+  report << "- Interview : #{meetings_by_cluster[:interview]&.count || 0}"
+  report << "- Other : #{meetings_by_cluster[:other]&.count || 0}"
   report << ""
 
   all_weighted_scores = []
@@ -274,23 +327,14 @@ def generate_report(meetings_by_cluster, date)
     rubric = RUBRICS[cluster]
     meetings.each do |m|
       next unless m[:grades] && !m[:grades].empty?
-      total_weight = 0
-      weighted_sum = 0
-      m[:grades].each do |criterion, details|
-        criterion_str = criterion.to_s
-        weight = rubric.dig(criterion_str, :weight) || rubric.dig(criterion_str.gsub('_', ' '), :weight) || 10
-        if details[:score]
-          weighted_sum += details[:score] * weight
-          total_weight += weight
-        end
-      end
-      all_weighted_scores << (weighted_sum.to_f / total_weight) if total_weight > 0
+      score = calculate_weighted_score(m[:grades], rubric)
+      all_weighted_scores << score if score > 0
     end
   end
 
   if all_weighted_scores.any?
     daily_avg = (all_weighted_scores.sum / all_weighted_scores.count).round(1)
-    report << "**Daily Weighted Average: #{daily_avg}/10**"
+    report << "**Daily Weighted Average : #{daily_avg}/10**"
     report << ""
   end
 
@@ -313,38 +357,28 @@ def generate_report(meetings_by_cluster, date)
 
     meetings.each do |m|
       report << "### #{m[:title]} - #{m[:date]}"
-      report << "**Participants:** #{m[:participants]&.join(', ')}"
-      report << "**Cluster confidence:** #{m[:cluster_info]&.[](:confidence) || 'unknown'}"
+      report << "**Participants :** #{m[:participants]&.join(', ')}"
+      report << "**Cluster confidence :** #{m[:cluster_info]&.[](:confidence) || 'unknown'}"
       report << ""
 
       if m[:grades] && !m[:grades].empty?
-        total_weight = 0
-        weighted_sum = 0
-        m[:grades].each do |criterion, details|
-          criterion_str = criterion.to_s
-          weight = rubric.dig(criterion_str, :weight) || rubric.dig(criterion_str.gsub('_', ' '), :weight) || 10
-          if details[:score]
-            weighted_sum += details[:score] * weight
-            total_weight += weight
-          end
-        end
-        weighted_avg = total_weight > 0 ? (weighted_sum.to_f / total_weight).round(1) : 0
+        weighted_avg = calculate_weighted_score(m[:grades], rubric)
 
-        report << "**Weighted Score: #{weighted_avg}/10**"
+        report << "**Weighted Score : #{weighted_avg}/10**"
         report << ""
-        report << "**Scores by Criterion:**"
+        report << "**Scores by Criterion :**"
         m[:grades].each do |criterion, details|
           criterion_str = criterion.to_s
           weight = rubric.dig(criterion_str, :weight) || rubric.dig(criterion_str.gsub('_', ' '), :weight) || 10
           score = details[:score] || 'N/A'
-          report << "- #{criterion} (#{weight}%): #{score}/10"
+          report << "- #{criterion} (#{weight}%) : #{score}/10"
           report << "  - #{details[:justification]}" if details[:justification]
         end
         report << ""
       end
 
       if m[:improvements] && !m[:improvements].empty?
-        report << "**Improvements:**"
+        report << "**Improvements :**"
         m[:improvements].each { |imp| report << "- #{imp}" }
         report << ""
       end
@@ -367,7 +401,7 @@ def main(date = Date.today.to_s)
   meetings_data = FirefliesAPI.list_recent(limit: 50, format: :detailed)
 
   if meetings_data[:success] == false
-    puts "Error fetching meetings: #{meetings_data[:error]}"
+    puts "Error fetching meetings : #{meetings_data[:error]}"
     exit 1
   end
 
@@ -397,7 +431,7 @@ def main(date = Date.today.to_s)
     cluster_info = cluster_meeting(meeting)
     cluster = cluster_info[:cluster]
 
-    puts "Processing: #{meeting[:title]} (#{cluster})"
+    puts "Processing : #{meeting[:title]} (#{cluster})"
 
     transcript_data = FirefliesAPI.get_transcript(
       transcript_id: meeting[:id],
@@ -405,7 +439,7 @@ def main(date = Date.today.to_s)
     )
 
     if transcript_data[:success] == false
-      puts "  Warning: Could not fetch transcript: #{transcript_data[:error]}"
+      puts "  Warning : Could not fetch transcript : #{transcript_data[:error]}"
       meeting[:error] = transcript_data[:error]
       meetings_by_cluster[cluster] << meeting
       next
@@ -435,7 +469,7 @@ def main(date = Date.today.to_s)
   report_path = File.join(reports_dir, "#{date}-meeting-review.md")
   File.write(report_path, report)
 
-  puts "\nReport saved to: #{report_path}"
+  puts "\nReport saved to : #{report_path}"
   puts "\n#{report}"
 end
 
